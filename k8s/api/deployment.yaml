@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-api
+  namespace: openclaw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator-api
+  template:
+    metadata:
+      labels:
+        app: orchestrator-api
+    spec:
+      containers:
+        - name: api
+          image: openclaw/orchestrator-api:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          env:
+            - name: TEMPORAL_HOST
+              value: "temporal.openclaw.svc.cluster.local:7233"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-api
+  namespace: openclaw
+spec:
+  selector:
+    app: orchestrator-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: NodePort

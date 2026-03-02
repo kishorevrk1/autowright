@@ -1,0 +1,18 @@
+---
+# Shared workspace volume.
+# Both the API pod (reads results) and agent pod (writes code + results)
+# mount this PVC at /workspace.
+#
+# On Minikube (single node) ReadWriteOnce is fine — all pods land on the
+# same node so multiple pods can mount it simultaneously.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-workspace
+  namespace: openclaw
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi

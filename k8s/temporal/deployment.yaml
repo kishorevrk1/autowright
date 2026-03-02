@@ -1,0 +1,51 @@
+# Temporal server running in "dev" mode (SQLite backend, no Cassandra needed).
+# Includes both the Temporal server and the Web UI in a single pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal
+  namespace: openclaw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: temporal
+  template:
+    metadata:
+      labels:
+        app: temporal
+    spec:
+      containers:
+        - name: temporal
+          image: temporalio/auto-setup:1.24
+          ports:
+            - containerPort: 7233   # gRPC frontend
+          env:
+            - name: DB
+              value: sqlite
+            - name: SKIP_DEFAULT_NAMESPACE_CREATION
+              value: "false"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+
+        - name: temporal-ui
+          image: temporalio/ui:2.28.0
+          ports:
+            - containerPort: 8080
+          env:
+            - name: TEMPORAL_ADDRESS
+              value: "localhost:7233"
+            - name: TEMPORAL_CORS_ORIGINS
+              value: "http://localhost:3000"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

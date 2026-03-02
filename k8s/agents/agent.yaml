@@ -1,0 +1,61 @@
+---
+# OpenClaw Agent Pod — Temporal worker + OpenHands
+#
+# Single pod that handles the full dev pipeline:
+#   receive task from Temporal → OpenHands clones repo → implements →
+#   self-reviews → commits → writes result.json → returns to Temporal
+#
+# Runtime: OpenHands "local" mode — sandbox runs as a subprocess inside
+# this pod (no Docker socket needed, no Docker-in-Docker complexity).
+# Files are written directly to the PVC at /workspace.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  namespace: openclaw
+  labels:
+    app: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels:
+        app: agent
+    spec:
+      containers:
+        - name: agent
+          image: openclaw/agent:latest
+          imagePullPolicy: IfNotPresent   # use local Minikube image
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: TEMPORAL_HOST
+              value: "temporal.openclaw.svc.cluster.local:7233"
+            - name: OLLAMA_HOST
+              value: "http://ollama.openclaw.svc.cluster.local:11434"
+            - name: MODEL
+              value: "ollama/qwen3-coder:30b"
+            - name: WORKSPACE_BASE
+              value: "/workspace"
+            # local runtime: OpenHands runs sandbox as a subprocess inside
+            # this pod — no Docker socket needed, works cleanly in K8s.
+            - name: RUNTIME_TYPE
+              value: "local"
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: openclaw-workspace
+      restartPolicy: Always

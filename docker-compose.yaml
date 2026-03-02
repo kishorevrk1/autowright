@@ -1,0 +1,99 @@
+# Local development stack — everything runs in Docker, no Minikube needed.
+# Workers connect to Temporal and Ollama via the Docker internal network.
+
+services:
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:1.24
+    ports:
+      - "7234:7233"   # host 7234 → container 7233 (avoids conflict if 7233 is already in use)
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  temporal-ui:
+    image: temporalio/ui:2.28.0
+    ports:
+      - "8080:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    depends_on:
+      - temporal
+
+  # Ollama runs on the HOST machine (not in Docker) — access via host.docker.internal.
+  # Start it locally with: ollama serve
+  # The model qwen3-coder:30b must already be pulled on the host.
+
+  # ---------------------------------------------------------------------------
+  # Orchestrator API + Workflow Runner
+  # ---------------------------------------------------------------------------
+  api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+    depends_on:
+      - temporal
+    restart: on-failure
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./api
+          target: /app/api
+
+  # ---------------------------------------------------------------------------
+  # Agent Worker — single pod, full pipeline (write → self-review → commit)
+  # ---------------------------------------------------------------------------
+  agent:
+    build:
+      context: .
+      dockerfile: agents/agent/Dockerfile
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TEMPORAL_HOST=temporal:7233
+      # Ollama runs on the host machine. Access via host.docker.internal.
+      # Start it locally: ollama serve
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - MODEL=ollama/qwen2.5-coder:14b
+      - WORKSPACE_BASE=/workspace
+      # Docker runtime: sandbox container talks back via host bridge.
+      # DOCKER_HOST_ADDR tells OpenHands to use host.docker.internal instead
+      # of localhost when connecting to the sandbox's action execution server.
+      - RUNTIME_TYPE=docker
+      - DOCKER_HOST_ADDR=host.docker.internal
+    volumes:
+      # Docker socket — OpenHands uses this to spin up sandbox containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared workspace — cloned repos and results appear here on the host
+      - workspace:/workspace
+    depends_on:
+      - temporal
+    restart: on-failure
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  temporal-pg-data:
+  workspace:          # shared volume — all workers read/write cloned repos here

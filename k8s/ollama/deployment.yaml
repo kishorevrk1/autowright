@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: openclaw
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+          env:
+            - name: OLLAMA_MODELS
+              value: /root/.ollama/models
+          volumeMounts:
+            - name: ollama-models
+              # Mount host's existing Ollama model directory so qwen3-coder:30b
+              # is available without re-downloading.
+              mountPath: /root/.ollama
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2"
+            limits:
+              memory: "32Gi"
+              cpu: "8"
+      volumes:
+        - name: ollama-models
+          hostPath:
+            # Minikube mounts the Windows home directory under /hosthome on the node.
+            # Adjust this path if your Ollama models live elsewhere.
+            path: /hosthome/.ollama
+            type: DirectoryOrCreate

@@ -1,11 +1,17 @@
 """
-OpenClaw Agent Worker — Temporal worker + OpenHands runner.
+Autowright Agent Worker — Temporal workflow + OpenHands activity.
 
-Single pod that handles the full dev pipeline:
-  write code → self-review → commit → report result
+Hosts the DevPipelineWorkflow (6-phase BMAD pipeline) and the
+run_dev_task activity (OpenHands CodeActAgent).
+
+The workflow chains activities across 3 task queues:
+  planning-queue  →  classify, analyst, PM, architect, scrum master
+  agent-queue     →  run_dev_task (OpenHands: code → test → commit)
+  qa-queue        →  run_qa_review (LLM review of diff vs PRD)
 
 Registered on task queue: agent-queue
-Activity name:            run_dev_task
+Workflow:                 DevPipelineWorkflow
+Activity:                 run_dev_task
 """
 
 import asyncio
@@ -73,14 +79,41 @@ def _write_config(workspace: str) -> None:
 
 # ── Task prompt builder ───────────────────────────────────────────────────────
 
-def _build_task(repo_url: str, requirement: str, task_id: str, workspace: str) -> str:
+def _build_task(
+    repo_url: str, requirement: str, task_id: str, workspace: str,
+    brief: str = "", prd: str = "", architecture: str = "", stories: str = "",
+) -> str:
     """
     Build the full pipeline task prompt for OpenHands.
     The agent clones, implements, self-reviews, commits, and writes result.json.
+    When planning artifacts are provided, they're injected as structured context.
     """
     branch      = f"feature/{task_id[:12]}"
     repo_dir    = f"{workspace}/repo"
     result_path = f"{workspace}/result.json"
+
+    # Build planning context section if BMAD phases produced artifacts
+    context_section = ""
+    if prd:
+        context_section = textwrap.dedent(f"""\
+            ## PLANNING CONTEXT (from BMAD pipeline)
+
+            ### Project Brief
+            {brief}
+
+            ### Product Requirements Document (PRD)
+            {prd}
+
+            ### Technical Architecture
+            {architecture}
+
+            ### Implementation Stories
+            {stories}
+
+            Follow the architecture document. Implement the stories in order.
+            Ensure all acceptance criteria from the PRD are met.
+
+        """)
 
     return textwrap.dedent(f"""\
         You are an autonomous software developer. Complete all steps below without asking.
@@ -89,7 +122,7 @@ def _build_task(repo_url: str, requirement: str, task_id: str, workspace: str) -
         REQUIREMENT: {requirement}
         BRANCH     : {branch}
 
-        ## STEP 1 — CLONE & BRANCH
+        {context_section}## STEP 1 — CLONE & BRANCH
         ```bash
         git clone {repo_url} {repo_dir}
         cd {repo_dir}
@@ -122,8 +155,8 @@ def _build_task(repo_url: str, requirement: str, task_id: str, workspace: str) -
         ```bash
         cd {repo_dir}
         git add -A
-        git config user.email "agent@openclaw.ai"
-        git config user.name "OpenClaw Agent"
+        git config user.email "agent@autowright.dev"
+        git config user.name "Autowright Agent"
         git commit -m "feat: {requirement[:60].rstrip()}"
         ```
 
@@ -203,16 +236,23 @@ async def run_dev_task(params: dict) -> dict:
     Sends heartbeats every ~30 log lines so Temporal knows we're alive
     during the long OpenHands run (can take 5-15 min per task).
     """
-    task_id     = params["task_id"]
-    repo_url    = params["repo_url"]
-    requirement = params["requirement"]
+    task_id      = params["task_id"]
+    repo_url     = params["repo_url"]
+    requirement  = params["requirement"]
+    brief        = params.get("brief", "")
+    prd          = params.get("prd", "")
+    architecture = params.get("architecture", "")
+    stories      = params.get("stories", "")
 
     workspace = os.path.join(WORKSPACE_BASE, task_id)
     os.makedirs(workspace, exist_ok=True)
 
     _write_config(workspace)
 
-    task = _build_task(repo_url, requirement, task_id, workspace)
+    task = _build_task(
+        repo_url, requirement, task_id, workspace,
+        brief=brief, prd=prd, architecture=architecture, stories=stories,
+    )
     activity.logger.info(f"[{task_id}] Starting OpenHands | model={MODEL}")
 
     env = {
@@ -280,31 +320,149 @@ async def run_dev_task(params: dict) -> dict:
     }
 
 
-# ── Temporal workflow (lives here so the agent is fully self-contained) ────────
+# ── Retry policies ───────────────────────────────────────────────────────────
+
+_PLANNING_RETRY = RetryPolicy(
+    maximum_attempts=2,
+    initial_interval=timedelta(seconds=10),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=5),
+)
+
+_DEV_RETRY = RetryPolicy(
+    maximum_attempts=3,
+    initial_interval=timedelta(seconds=30),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=10),
+)
+
+_QA_RETRY = RetryPolicy(
+    maximum_attempts=2,
+    initial_interval=timedelta(seconds=10),
+    backoff_coefficient=2.0,
+    maximum_interval=timedelta(minutes=5),
+)
+
+
+# ── Temporal workflow — 6-phase BMAD pipeline ────────────────────────────────
 
 @workflow.defn(name="DevPipelineWorkflow")
 class DevPipelineWorkflow:
     """
-    Single-activity workflow: delegates everything to run_dev_task.
-    Defined here so the agent worker is the only service needed — no
-    separate workflow-runner container required.
+    BMAD-structured pipeline:
+      1. classify_task     → SIMPLE or COMPLEX
+      2. run_analyst       → project brief        (skipped if SIMPLE)
+      3. run_pm            → PRD                   (skipped if SIMPLE)
+      4. run_architect     → architecture doc      (skipped if SIMPLE)
+      5. run_scrum_master  → implementation stories(skipped if SIMPLE)
+      6. run_dev_task      → OpenHands CodeActAgent
+      7. run_qa_review     → verdict (APPROVED/REJECTED)
+
+    Activities 1-5 run on planning-queue (LLM-only pods).
+    Activity 6 runs on agent-queue (OpenHands pod).
+    Activity 7 runs on qa-queue (LLM + git diff reading).
     """
+
     @workflow.run
     async def run(self, params: dict) -> dict:
-        return await workflow.execute_activity(
-            run_dev_task,
-            params,
-            # No task_queue override: defaults to the worker's own queue (agent-queue)
-            schedule_to_close_timeout=timedelta(hours=2),
-            # 5-minute heartbeat timeout — worker sends heartbeats every 60s
-            heartbeat_timeout=timedelta(minutes=5),
-            retry_policy=RetryPolicy(
-                maximum_attempts=3,
-                initial_interval=timedelta(seconds=30),
-                backoff_coefficient=2.0,
-                maximum_interval=timedelta(minutes=10),
-            ),
+        task_id     = params["task_id"]
+        repo_url    = params["repo_url"]
+        requirement = params["requirement"]
+
+        # ── Phase 0: Classify ────────────────────────────────────────
+        is_simple = await workflow.execute_activity(
+            "classify_task",
+            {"requirement": requirement},
+            task_queue="planning-queue",
+            schedule_to_close_timeout=timedelta(minutes=5),
+            heartbeat_timeout=timedelta(minutes=3),
+            retry_policy=_PLANNING_RETRY,
         )
+
+        brief = ""
+        prd = ""
+        architecture = ""
+        stories = ""
+
+        if not is_simple:
+            # ── Phase 1: Analyst ─────────────────────────────────────
+            brief = await workflow.execute_activity(
+                "run_analyst",
+                {"repo_url": repo_url, "requirement": requirement},
+                task_queue="planning-queue",
+                schedule_to_close_timeout=timedelta(minutes=10),
+                heartbeat_timeout=timedelta(minutes=3),
+                retry_policy=_PLANNING_RETRY,
+            )
+
+            # ── Phase 2: Product Manager ─────────────────────────────
+            prd = await workflow.execute_activity(
+                "run_pm",
+                {"requirement": requirement, "brief": brief},
+                task_queue="planning-queue",
+                schedule_to_close_timeout=timedelta(minutes=10),
+                heartbeat_timeout=timedelta(minutes=3),
+                retry_policy=_PLANNING_RETRY,
+            )
+
+            # ── Phase 3: Architect ───────────────────────────────────
+            architecture = await workflow.execute_activity(
+                "run_architect",
+                {"requirement": requirement, "prd": prd},
+                task_queue="planning-queue",
+                schedule_to_close_timeout=timedelta(minutes=10),
+                heartbeat_timeout=timedelta(minutes=3),
+                retry_policy=_PLANNING_RETRY,
+            )
+
+            # ── Phase 4: Scrum Master ────────────────────────────────
+            stories = await workflow.execute_activity(
+                "run_scrum_master",
+                {"prd": prd, "architecture": architecture},
+                task_queue="planning-queue",
+                schedule_to_close_timeout=timedelta(minutes=10),
+                heartbeat_timeout=timedelta(minutes=3),
+                retry_policy=_PLANNING_RETRY,
+            )
+
+        # ── Phase 5: Developer (OpenHands) ───────────────────────────
+        dev_result = await workflow.execute_activity(
+            run_dev_task,
+            {
+                "task_id": task_id,
+                "repo_url": repo_url,
+                "requirement": requirement,
+                "brief": brief,
+                "prd": prd,
+                "architecture": architecture,
+                "stories": stories,
+            },
+            schedule_to_close_timeout=timedelta(hours=2),
+            heartbeat_timeout=timedelta(minutes=5),
+            retry_policy=_DEV_RETRY,
+        )
+
+        # ── Phase 6: QA Review ───────────────────────────────────────
+        qa_result = await workflow.execute_activity(
+            "run_qa_review",
+            {
+                "task_id": task_id,
+                "dev_result": dev_result,
+                "prd": prd,
+                "stories": stories,
+            },
+            task_queue="qa-queue",
+            schedule_to_close_timeout=timedelta(minutes=30),
+            heartbeat_timeout=timedelta(minutes=3),
+            retry_policy=_QA_RETRY,
+        )
+
+        return {
+            **dev_result,
+            "qa_verdict": qa_result.get("verdict", "UNKNOWN"),
+            "qa_feedback": qa_result.get("summary", ""),
+            "planning_used": not is_simple,
+        }
 
 
 # ── Worker entrypoint ─────────────────────────────────────────────────────────

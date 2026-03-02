@@ -5,9 +5,13 @@ from typing import Optional
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
-    WRITING = "writing"
+    CLASSIFYING = "classifying"
+    ANALYZING = "analyzing"
+    PLANNING = "planning"
+    ARCHITECTING = "architecting"
+    STORY_WRITING = "story_writing"
+    DEVELOPING = "developing"
     REVIEWING = "reviewing"
-    DEPLOYING = "deploying"
     DONE = "done"
     FAILED = "failed"
 

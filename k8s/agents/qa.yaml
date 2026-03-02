@@ -1,0 +1,55 @@
+---
+# QA Pod — Temporal worker for code review phase
+#
+# Handles 1 activity on qa-queue:
+#   run_qa_review — reads git diff from workspace, reviews against PRD
+#
+# Needs workspace volume to read the developer's git diff.
+# Calls Ollama API directly via httpx.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qa
+  namespace: openclaw
+  labels:
+    app: qa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qa
+  template:
+    metadata:
+      labels:
+        app: qa
+    spec:
+      containers:
+        - name: qa
+          image: openclaw/qa:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: TEMPORAL_HOST
+              value: "temporal.openclaw.svc.cluster.local:7233"
+            - name: OLLAMA_HOST
+              value: "http://ollama.openclaw.svc.cluster.local:11434"
+            - name: QA_MODEL
+              value: "qwen3-coder:30b"
+            - name: WORKSPACE_BASE
+              value: "/workspace"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: openclaw-workspace
+      restartPolicy: Always

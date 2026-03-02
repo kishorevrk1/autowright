@@ -45,14 +45,32 @@ async def get_task(task_id: str, repo_url: str = "", requirement: str = ""):
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    status_map = {
-        WorkflowExecutionStatus.RUNNING: TaskStatus.WRITING,
-        WorkflowExecutionStatus.COMPLETED: TaskStatus.DONE,
-        WorkflowExecutionStatus.FAILED: TaskStatus.FAILED,
-        WorkflowExecutionStatus.TIMED_OUT: TaskStatus.FAILED,
-        WorkflowExecutionStatus.TERMINATED: TaskStatus.FAILED,
-    }
-    task_status = status_map.get(desc.status, TaskStatus.PENDING)
+    # Map Temporal status to TaskStatus, with per-activity granularity for RUNNING
+    if desc.status == WorkflowExecutionStatus.COMPLETED:
+        task_status = TaskStatus.DONE
+    elif desc.status in (
+        WorkflowExecutionStatus.FAILED,
+        WorkflowExecutionStatus.TIMED_OUT,
+        WorkflowExecutionStatus.TERMINATED,
+    ):
+        task_status = TaskStatus.FAILED
+    elif desc.status == WorkflowExecutionStatus.RUNNING:
+        # Derive stage from pending activity
+        activity_stage_map = {
+            "classify_task":    TaskStatus.CLASSIFYING,
+            "run_analyst":      TaskStatus.ANALYZING,
+            "run_pm":           TaskStatus.PLANNING,
+            "run_architect":    TaskStatus.ARCHITECTING,
+            "run_scrum_master": TaskStatus.STORY_WRITING,
+            "run_dev_task":     TaskStatus.DEVELOPING,
+            "run_qa_review":    TaskStatus.REVIEWING,
+        }
+        task_status = TaskStatus.DEVELOPING  # default for RUNNING
+        if hasattr(desc, "pending_activities") and desc.pending_activities:
+            activity_name = desc.pending_activities[0].activity_type
+            task_status = activity_stage_map.get(activity_name, TaskStatus.DEVELOPING)
+    else:
+        task_status = TaskStatus.PENDING
 
     return TaskResponse(
         task_id=task_id,

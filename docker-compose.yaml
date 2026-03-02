@@ -46,7 +46,7 @@ services:
   # The model qwen3-coder:30b must already be pulled on the host.
 
   # ---------------------------------------------------------------------------
-  # Orchestrator API + Workflow Runner
+  # Orchestrator API
   # ---------------------------------------------------------------------------
   api:
     build: ./api
@@ -64,7 +64,24 @@ services:
           target: /app/api
 
   # ---------------------------------------------------------------------------
-  # Agent Worker — single pod, full pipeline (write → self-review → commit)
+  # BMAD Planning Pod — analyst, PM, architect, scrum master (LLM-only)
+  # ---------------------------------------------------------------------------
+  planning:
+    build:
+      context: ./agents/planning
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TEMPORAL_HOST=temporal:7233
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - PLANNING_MODEL=qwen2.5-coder:14b
+    depends_on:
+      - temporal
+    restart: on-failure
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ---------------------------------------------------------------------------
+  # Developer Pod — OpenHands CodeActAgent (code → test → commit)
   # ---------------------------------------------------------------------------
   agent:
     build:
@@ -73,20 +90,33 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - TEMPORAL_HOST=temporal:7233
-      # Ollama runs on the host machine. Access via host.docker.internal.
-      # Start it locally: ollama serve
       - OLLAMA_HOST=http://host.docker.internal:11434
       - MODEL=ollama/qwen2.5-coder:14b
       - WORKSPACE_BASE=/workspace
-      # Docker runtime: sandbox container talks back via host bridge.
-      # DOCKER_HOST_ADDR tells OpenHands to use host.docker.internal instead
-      # of localhost when connecting to the sandbox's action execution server.
       - RUNTIME_TYPE=docker
       - DOCKER_HOST_ADDR=host.docker.internal
     volumes:
-      # Docker socket — OpenHands uses this to spin up sandbox containers
       - /var/run/docker.sock:/var/run/docker.sock
-      # Shared workspace — cloned repos and results appear here on the host
+      - workspace:/workspace
+    depends_on:
+      - temporal
+    restart: on-failure
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ---------------------------------------------------------------------------
+  # QA Pod — reviews git diff against PRD, returns verdict
+  # ---------------------------------------------------------------------------
+  qa:
+    build:
+      context: ./agents/qa
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TEMPORAL_HOST=temporal:7233
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - QA_MODEL=qwen2.5-coder:14b
+      - WORKSPACE_BASE=/workspace
+    volumes:
       - workspace:/workspace
     depends_on:
       - temporal
@@ -96,4 +126,4 @@ services:
 
 volumes:
   temporal-pg-data:
-  workspace:          # shared volume — all workers read/write cloned repos here
+  workspace:          # shared volume — agent writes, QA reads cloned repos

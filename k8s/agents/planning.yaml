@@ -1,0 +1,46 @@
+---
+# BMAD Planning Pod — Temporal worker for planning phases
+#
+# Handles 5 LLM-only activities on planning-queue:
+#   classify_task, run_analyst, run_pm, run_architect, run_scrum_master
+#
+# Lightweight pod: no code execution, no Docker, no workspace volume.
+# Calls Ollama API directly via httpx.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: planning
+  namespace: openclaw
+  labels:
+    app: planning
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: planning
+  template:
+    metadata:
+      labels:
+        app: planning
+    spec:
+      containers:
+        - name: planning
+          image: openclaw/planning:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: TEMPORAL_HOST
+              value: "temporal.openclaw.svc.cluster.local:7233"
+            - name: OLLAMA_HOST
+              value: "http://ollama.openclaw.svc.cluster.local:11434"
+            - name: PLANNING_MODEL
+              value: "qwen3-coder:30b"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      restartPolicy: Always

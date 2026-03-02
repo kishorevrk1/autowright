@@ -7,17 +7,14 @@ set -euo pipefail
 # Point Docker daemon at Minikube's registry
 eval "$(minikube docker-env)"
 
-echo "==> Building base agent image..."
-docker build -t openclaw/agent-base:latest agents/base/
+echo "==> Building planning image..."
+docker build -t openclaw/planning:latest agents/planning/
 
-echo "==> Building code-writer image..."
-docker build -t openclaw/agent-code-writer:latest agents/code-writer/
+echo "==> Building agent image..."
+docker build -t openclaw/agent:latest -f agents/agent/Dockerfile .
 
-echo "==> Building reviewer image..."
-docker build -t openclaw/agent-reviewer:latest agents/reviewer/
-
-echo "==> Building deployer image..."
-docker build -t openclaw/agent-deployer:latest agents/deployer/
+echo "==> Building QA image..."
+docker build -t openclaw/qa:latest agents/qa/
 
 echo "==> Building orchestrator API image..."
 docker build -t openclaw/orchestrator-api:latest api/

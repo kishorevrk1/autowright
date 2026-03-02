@@ -13,7 +13,13 @@ router = APIRouter(tags=["websocket"])
 POLL_INTERVAL = 2  # seconds
 
 STAGE_MAP = {
-    "run_dev_task": "running",   # single agent: write → review → commit
+    "classify_task":    "classifying",
+    "run_analyst":      "analyzing",
+    "run_pm":           "planning",
+    "run_architect":    "architecting",
+    "run_scrum_master": "writing_stories",
+    "run_dev_task":     "developing",
+    "run_qa_review":    "reviewing",
 }
 
 

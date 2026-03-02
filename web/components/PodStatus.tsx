@@ -35,7 +35,7 @@ export default function PodStatus() {
       : "bg-red-500";
 
   const label =
-    health === "ok" ? "Agent ready" : health === "loading" ? "Connecting…" : "Agent offline";
+    health === "ok" ? "Pipeline ready" : health === "loading" ? "Connecting…" : "Pipeline offline";
 
   return (
     <div className="flex items-center gap-1.5">

@@ -14,7 +14,10 @@ A human manager types a requirement ("Add a /health endpoint") and a repo URL in
 4. Runs tests
 5. Self-reviews via `git diff`
 6. Commits to a feature branch
-7. Reports back with branch name, commit SHA, and summary
+7. Pushes the branch to remote
+8. Reports back with branch name, commit SHA, and summary
+
+> **Roadmap:** Auto-deploy (build Docker image → write K8s manifests → deploy to cluster) is planned as an optional pipeline stage.
 
 All orchestrated by [Temporal](https://temporal.io) — if the agent pod crashes mid-task, Temporal automatically replays from the last checkpoint. No lost work.
 
@@ -40,7 +43,7 @@ All orchestrated by [Temporal](https://temporal.io) — if the agent pod crashes
 ┌──────────────▼─────────────────────┐
 │     Agent Pod                      │
 │     OpenHands (CodeActAgent)       │
-│     Clone → Code → Test → Commit  │
+│  Clone → Code → Test → Commit → Push │
 └──────────────┬─────────────────────┘
                │
 ┌──────────────▼─────────────────────┐
